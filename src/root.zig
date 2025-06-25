@@ -5,6 +5,13 @@ pub const RequestOptions = struct {
     headers: ?[]std.http.Header = null,
 };
 
+const InternalRequestOptions = struct {
+    options: ?RequestOptions,
+    url: []const u8,
+    method: std.http.Method,
+    body: ?[]const u8,
+};
+
 pub const HttpClient = struct {
     allocator: std.mem.Allocator,
     client: std.http.Client,
@@ -17,18 +24,17 @@ pub const HttpClient = struct {
         self.client.deinit();
     }
 
-    pub fn get(self: *HttpClient, url: []const u8, options: ?RequestOptions) !HttpResponse {
+    fn doRequest(self: *HttpClient, options: InternalRequestOptions) !HttpResponse {
         var buf: [4096]u8 = undefined;
 
         // Parse the URL properly
-        const uri = try std.Uri.parse(url);
+        const uri = try std.Uri.parse(options.url);
 
         // Start the HTTP request
-        var req = try self.client.open(.GET, uri, .{ .server_header_buffer = &buf });
-        if (options != null) {
-            if (options.?.headers != null) {
-                req.extra_headers = options.?.headers.?;
-            }
+        var req = try self.client.open(options.method, uri, .{ .server_header_buffer = &buf });
+
+        if (options.options.?.headers.?.len > 0) {
+            req.extra_headers = options.options.?.headers.?;
         }
 
         errdefer req.deinit();
@@ -44,6 +50,27 @@ pub const HttpClient = struct {
             .status = req.response.status,
             .status_class = req.response.status.class(),
         };
+    }
+    pub fn post(self: *HttpClient, url: []const u8, comptime body: type, options: ?RequestOptions) !HttpResponse {
+        var string = std.ArrayList(u8).init(self.allocator);
+        defer string.deinit();
+        try std.json.stringify(body, .{}, string.writer());
+
+        const body_string = try string.toOwnedSlice();
+        const internalOptions = InternalRequestOptions{ .options = options, .url = url, .method = .GET, .body = body_string };
+
+        return self.doRequest(internalOptions);
+    }
+
+    pub fn get(self: *HttpClient, url: []const u8, options: ?RequestOptions) !HttpResponse {
+        const internalOptions = InternalRequestOptions{
+            .options = options.?,
+            .url = url,
+            .method = .GET,
+            .body = null,
+        };
+
+        return self.doRequest(internalOptions);
     }
 };
 
